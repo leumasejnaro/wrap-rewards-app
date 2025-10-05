@@ -1,13 +1,12 @@
-import React, { useState, useEffect } from 'react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, setDoc, setLogLevel } from 'firebase/firestore';
+import React, { useState, useEffect, useCallback } from 'react';
+
+// NOTE: We are removing direct package imports (like 'firebase/app') 
+// and will load them dynamically using CDN/global scope later to fix Vercel deployment issues.
 
 // --- Global Variables (Mandatory for Canvas Environment) ---
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-setLogLevel('Debug'); // Enable Firebase debug logging
 
 // --- Utility: Icon SVGs ---
 const Icon = ({ name, className }) => {
@@ -162,8 +161,10 @@ const FeatureCard = ({ iconName, title, description, isOwner }) => (
 // --- Registration Form Component (Handles Authentication and Firestore) ---
 const RegistrationForm = ({ setView }) => {
   const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null); // Keep auth instance
   const [userId, setUserId] = useState(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [firebaseLoaded, setFirebaseLoaded] = useState(false); // New state for CDN loading
 
   const [currentStep, setCurrentStep] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -183,20 +184,61 @@ const RegistrationForm = ({ setView }) => {
     status: 'Pending',
   });
 
-  // 1. Firebase Initialization and Authentication
+  // 1. Dynamic Firebase CDN Loading
   useEffect(() => {
-    if (!firebaseConfig || !Object.keys(firebaseConfig).length) {
-      console.error("Firebase configuration is missing.");
-      setIsAuthReady(true);
+    if (typeof window.firebase !== 'undefined' && window.firebase.app) {
+      setFirebaseLoaded(true);
       return;
     }
 
+    const loadScripts = async () => {
+      const scripts = [
+        "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js",
+        "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js",
+        "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"
+      ];
+
+      for (const src of scripts) {
+        if (!document.querySelector(`script[src="${src}"]`)) {
+          await new Promise(resolve => {
+            const script = document.createElement('script');
+            script.src = src;
+            script.onload = resolve;
+            document.head.appendChild(script);
+          });
+        }
+      }
+      setFirebaseLoaded(true);
+    };
+
+    loadScripts();
+  }, []);
+
+
+  // 2. Firebase Initialization and Authentication (runs when scripts are loaded)
+  useEffect(() => {
+    if (!firebaseLoaded || !firebaseConfig || !Object.keys(firebaseConfig).length) {
+      if (firebaseLoaded) {
+        console.error("Firebase configuration is missing.");
+        setIsAuthReady(true);
+      }
+      return;
+    }
+    
+    // Destructure global functions after scripts are loaded
+    const { initializeApp } = window.firebase.app;
+    const { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } = window.firebase.auth;
+    const { getFirestore, setDoc, doc, setLogLevel } = window.firebase.firestore;
+    
     try {
+      setLogLevel('Debug'); // Enable Firebase debug logging
+      
       const firebaseApp = initializeApp(firebaseConfig);
       const firestore = getFirestore(firebaseApp);
       const firebaseAuth = getAuth(firebaseApp);
 
       setDb(firestore);
+      setAuth(firebaseAuth);
 
       const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
         if (user) {
@@ -218,15 +260,15 @@ const RegistrationForm = ({ setView }) => {
       console.error("Error initializing Firebase or signing in:", e);
       setIsAuthReady(true);
     }
-  }, []);
+  }, [firebaseLoaded]); // Dependency on firebaseLoaded
 
-  // 2. Form Handlers
+  // 3. Form Handlers
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
-  const isFormValid = (step) => {
+  const isFormValid = useCallback((step) => {
     const requiredFields = {
       1: ['fullName', 'email', 'phone', 'city'],
       2: ['make', 'model', 'year', 'coverage', 'mileage'],
@@ -240,7 +282,7 @@ const RegistrationForm = ({ setView }) => {
       }
     }
     return true;
-  };
+  }, [formData]);
 
   const handleNext = (e) => {
     e.preventDefault();
@@ -257,22 +299,27 @@ const RegistrationForm = ({ setView }) => {
     }
   };
 
-  // 3. Firestore Submission Logic
+  // 4. Firestore Submission Logic
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    // Check validation for the final step (Step 2 fields, as Step 3 is review)
     if (!isFormValid(2)) {
         setSubmissionStatus('error');
         console.error("Form validation failed before submission.");
         return;
     }
-
-    if (!db || !userId) {
-      console.error("Firestore database or user ID is not available.");
+    
+    if (!db || !userId || !window.firebase?.firestore?.setDoc) {
+      console.error("Firestore database or user ID is not available or Firestore API not loaded.");
       setSubmissionStatus('error');
       return;
     }
 
     setLoading(true);
+    
+    // Destructure doc/setDoc from the window scope
+    const { setDoc, doc } = window.firebase.firestore;
 
     const userRegistrationRef = doc(
       db,
@@ -384,9 +431,9 @@ const RegistrationForm = ({ setView }) => {
           <button
             type="button"
             onClick={handleBack}
-            disabled={currentStep === 1 || loading}
+            disabled={currentStep === 1 || loading || !isAuthReady}
             className={`py-2 px-4 rounded-lg text-sm font-semibold transition-all duration-200 ease-in-out ${
-              currentStep === 1 || loading
+              currentStep === 1 || loading || !isAuthReady
                 ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                 : 'bg-white text-indigo-600 hover:bg-indigo-50 border border-indigo-600 shadow-md'
             }`}
