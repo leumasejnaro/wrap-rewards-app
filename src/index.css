@@ -5,6 +5,7 @@
 /* Custom font settings for the whole app */
 @layer base {
   body {
+    /* We are ensuring the Inter font is referenced here, even though we load it via CDN in index.html */
     font-family: 'Inter', sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
